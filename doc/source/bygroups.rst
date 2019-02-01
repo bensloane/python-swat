@@ -30,8 +30,9 @@ class defines some helper methods for you.
    import swat
    hostname = os.environ['CASHOST']
    port = os.environ['CASPORT']
-   username = password = None
-   conn = swat.CAS(hostname, port, username, password)
+   userid = os.environ.get('CASUSER', None)
+   password = os.environ.get('CASPASSWORD', None)
+   conn = swat.CAS(hostname, port, userid, password)
    tbl = conn.read_csv('https://raw.githubusercontent.com/'
                        'sassoftware/sas-viya-programming/master/data/cars.csv')
 

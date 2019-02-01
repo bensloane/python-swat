@@ -29,26 +29,47 @@ import os
 import re
 import requests
 import six
+import sys
 from six.moves import urllib
 from .message import REST_CASMessage
 from .response import REST_CASResponse
 from ..types import blob
 from ..table import CASTable
-from ...config import options
+from ...config import options, get_option
 from ...exceptions import SWATError
 from ...utils.args import parsesoptions
 from ...utils.keyword import keywordify
-from ...utils.compat import (a2u, int_types, int32_types, int64_types,
+from ...utils.compat import (a2u, int_types, int32_types, int64_types, dict_types,
                              float64_types, items_types, int32, int64, float64)
 from ...utils.authinfo import query_authinfo
 
 # pylint: disable=C0330
 
 
+def _print_request(rtype, url, headers, data=None):
+    ''' Print debugging information of request '''
+    sys.stderr.write('%s %s\n' % (rtype, url))
+    if get_option('cas.debug.request_bodies'):
+        for key, value in six.iteritems(headers):
+            sys.stderr.write('%s: %s\n' % (key, value))
+        if headers or data:
+            sys.stderr.write('\n')
+        if data:
+            sys.stderr.write(a2u(data, 'utf-8'))
+            sys.stderr.write('\n')
+            sys.stderr.write('\n')
+
+
+def _print_response(text):
+    ''' Print the respnose for debugging '''
+    sys.stderr.write(a2u(text, 'utf-8'))
+    sys.stderr.write('\n')
+
+
 def _print_params(params, prefix=''):
     ''' Print parameters for tracing actions '''
     for key, value in sorted(six.iteritems(params)):
-        if isinstance(value, dict):
+        if isinstance(value, dict_types):
             _print_params(value, prefix='%s%s.' % (prefix, key))
         elif isinstance(value, items_types):
             _print_params_list(value, prefix='%s%s.' % (prefix, key))
@@ -60,7 +81,7 @@ def _print_params_list(plist, prefix=''):
     ''' Print parameter list for tracing actions '''
     if plist:
         for i, item in enumerate(plist):
-            if isinstance(item, dict):
+            if isinstance(item, dict_types):
                 _print_params(item, prefix='%s[%s].' % (prefix, i))
             elif isinstance(item, items_types):
                 _print_params_list(item, prefix='%s[%s].' % (prefix, i))
@@ -97,7 +118,7 @@ def _normalize_params(params):
             pass
         elif value is False:
             pass
-        elif isinstance(value, dict):
+        elif isinstance(value, dict_types):
             numkeys = [x for x in value.keys() if isinstance(x, int_types)]
             if not numkeys:
                 value = _normalize_params(value)
@@ -117,7 +138,7 @@ def _normalize_params(params):
             value = float64(value)
         elif isinstance(value, blob):
             b64data = base64.b64encode(value)
-            value = dict(_blob=True, data=a2u(b64data), length=len(b64data))
+            value = dict(_blob=True, data=a2u(b64data), length=len(value))
         out[key] = value
     return out
 
@@ -126,7 +147,7 @@ def _normalize_list(items):
     ''' Normalize objects using standard python types '''
     newitems = []
     for item in items:
-        if isinstance(item, dict):
+        if isinstance(item, dict_types):
             item = _normalize_params(item)
         elif isinstance(item, items_types):
             item = _normalize_list(item)
@@ -227,9 +248,9 @@ class REST_CASConnection(object):
         self._req_sess = requests.Session()
 
         if 'SSLCALISTLOC' in os.environ:
-            self._req_sess.verify = os.environ['SSLCALISTLOC']
+            self._req_sess.verify = os.path.expanduser(os.environ['SSLCALISTLOC'])
         elif 'CAS_CLIENT_SSL_CA_LIST' in os.environ:
-            self._req_sess.verify = os.environ['CAS_CLIENT_SSL_CA_LIST']
+            self._req_sess.verify = os.path.expanduser(os.environ['CAS_CLIENT_SSL_CA_LIST'])
 
         if os.environ.get('SSLREQCERT', 'y').lower().startswith('n'):
             self._req_sess.verify = False
@@ -243,24 +264,46 @@ class REST_CASConnection(object):
         while True:
             try:
                 if session:
-                    res = self._req_sess.get(urllib.parse.urljoin(self._current_baseurl,
-                                             'cas/sessions/%s' % session), data=b'')
+                    url = urllib.parse.urljoin(self._current_baseurl,
+                                               'cas/sessions/%s' % session)
+
+                    if get_option('cas.debug.requests'):
+                        _print_request('GET', url, self._req_sess.headers)
+
+                    res = self._req_sess.get(url, data=b'')
+
+                    if get_option('cas.debug.responses'):
+                        _print_response(res.text)
+
                     out = json.loads(a2u(res.text, 'utf-8'))
+
                     if out.get('error', None):
                         if out.get('details', None):
                             raise SWATError('%s (%s)' % (out['error'], out['details']))
                         raise SWATError(out['error'])
+
                     self._session = out['uuid']
                     break
 
                 else:
-                    res = self._req_sess.put(urllib.parse.urljoin(self._current_baseurl,
-                                             'cas/sessions'), data=b'')
+                    url = urllib.parse.urljoin(self._current_baseurl,
+                                               'cas/sessions')
+
+                    if get_option('cas.debug.requests'):
+                        _print_request('PUT', url, self._req_sess.headers)
+
+                    res = self._req_sess.put(url, data=b'')
+
+                    if get_option('cas.debug.responses'):
+                        _print_response(res.text)
+
                     out = json.loads(a2u(res.text, 'utf-8'))
+
                     if out.get('error', None):
                         if out.get('details', None):
                             raise SWATError('%s (%s)' % (out['error'], out['details']))
                         raise SWATError(out['error'])
+
                     self._session = out['session']
 
                     if locale:
@@ -328,11 +371,18 @@ class REST_CASConnection(object):
 
         while True:
             try:
-                res = self._req_sess.post(
-                          urllib.parse.urljoin(self._current_baseurl,
-                                               'cas/sessions/%s/actions/%s' %
-                                               (self._session, action_name)),
-                          data=post_data)
+                url = urllib.parse.urljoin(self._current_baseurl,
+                                           'cas/sessions/%s/actions/%s' %
+                                           (self._session, action_name))
+
+                if get_option('cas.debug.requests'):
+                    _print_request('POST', url, self._req_sess.headers, post_data)
+
+                res = self._req_sess.post(url, data=post_data)
+
+                if get_option('cas.debug.responses'):
+                    _print_response(res.text)
+
                 res = res.text
                 break
 
@@ -347,11 +397,17 @@ class REST_CASConnection(object):
                     'Content-Length': str(len(post_data)),
                 })
 
-                res = self._req_sess.post(
-                           urllib.parse.urljoin(self._current_baseurl,
-                                                'cas/sessions/%s/actions/%s' %
-                                                (self._session, action_name)),
-                           data=post_data)
+                url = urllib.parse.urljoin(self._current_baseurl,
+                                           'cas/sessions/%s/actions/%s' %
+                                           (self._session, action_name))
+
+                if get_option('cas.debug.requests'):
+                    _print_request('POST', url, self._req_sess.headers, post_data)
+
+                res = self._req_sess.post(url, data=post_data)
+
+                if get_option('cas.debug.responses'):
+                    _print_response(res.text)
 
                 out = json.loads(a2u(res.text, 'utf-8'), strict=False)
                 result_id = out['results']['Queued Results']['rows'][0][0]
@@ -445,8 +501,15 @@ class REST_CASConnection(object):
                 'Content-Type': 'application/json',
                 'Content-Length': '0',
             })
-            res = self._req_sess.delete(urllib.parse.urljoin(self._current_baseurl,
-                                        'cas/sessions/%s' % self._session), data=b'')
+
+            url = urllib.parse.urljoin(self._current_baseurl,
+                                       'cas/sessions/%s' % self._session)
+
+            if get_option('cas.debug.requests'):
+                _print_requests('DELETE', url, self._req_sess.headers)
+
+            res = self._req_sess.delete(url, data=b'')
+
             self._session = None
             return res.status_code
 
@@ -463,10 +526,18 @@ class REST_CASConnection(object):
 
         while True:
             try:
-                res = self._req_sess.put(
-                          urllib.parse.urljoin(self._current_baseurl,
-                                               'cas/sessions/%s/actions/table.upload' %
-                                               self._session), data=data)
+                url = urllib.parse.urljoin(self._current_baseurl,
+                                           'cas/sessions/%s/actions/table.upload' %
+                                           self._session)
+
+                if get_option('cas.debug.requests'):
+                    _print_request('DELETE', url, self._req_sess.headers, data)
+
+                res = self._req_sess.put(url, data=data)
+
+                if get_option('cas.debug.responses'):
+                    _print_response(res.text)
+
                 res = res.text
                 break
 

@@ -46,6 +46,7 @@ Session Management
    :toctree: generated/
 
    CAS.close
+   CAS.terminate
    CAS.copy
    CAS.fork
    CAS.session_context
@@ -452,6 +453,14 @@ Serialization / IO / Conversion
    CASTable.to_dense
    CASTable.to_string
    CASTable.to_clipboard
+
+Utilities
+~~~~~~~~~
+.. autosummary::
+   :toctree: generated/
+
+   CASTable.copy
+   CASTable.with_params
 
 
 CASColumn

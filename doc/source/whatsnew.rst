@@ -9,13 +9,29 @@ What's New
 
 This document outlines features and improvements from each release.
 
+v1.5.0 (September 18, 2018)
+===========================
+
+- Windows support for binary CAS protocol
+- Added ``with_params`` method to ``CASTable`` to create one-off parameter object
+- Set appropriate column data types when uploading a ``DataFrame``
+
+
+v1.4.0 (July 25, 2018)
+======================
+
+- Automatic CAS table creation when large number of By groups are generated in some DataFrame methods
+- Debugging options for REST interface
+- Python 3.7 support
+
+
 v1.3.1 (June 4, 2018)
 =====================
 
 - Increase compatibility with older and newer versions of pandas
 - Automatically convert columns with SAS date/time formats to Python date/time objects
-- Improve `CASTable.merge` algorithm
-- Fix autocompletion on `CAS` and `CASTable` objects
+- Improve ``CASTable.merge`` algorithm
+- Fix autocompletion on ``CAS`` and ``CASTable`` objects
 
 
 v1.3.0 (December 12, 2017)

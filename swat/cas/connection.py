@@ -23,10 +23,12 @@ Class for creating CAS sessions
 
 from __future__ import print_function, division, absolute_import, unicode_literals
 
+import collections
 import contextlib
 import copy
 import json
 import os
+import random
 import re
 import weakref
 import six
@@ -37,7 +39,7 @@ from ..exceptions import SWATError, SWATCASActionError, SWATCASActionRetry
 from ..utils.config import subscribe, get_option
 from ..clib import errorcheck
 from ..utils.compat import (a2u, a2n, int32, int64, float64, text_types,
-                            binary_types, items_types, int_types)
+                            binary_types, items_types, int_types, dict_types)
 from ..utils import getsoptions
 from ..utils.args import iteroptions
 from ..formatter import SASFormatter
@@ -48,7 +50,7 @@ from .request import CASRequest
 from .response import CASResponse
 from .results import CASResults
 from .utils.params import ParamManager, ActionParamManager
-from .utils.misc import super_dir
+from .utils.misc import super_dir, any_file_exists
 
 # pylint: disable=W0212
 
@@ -217,6 +219,16 @@ class CAS(object):
                  session=None, locale=None, nworkers=None, name=None,
                  authinfo=None, protocol=None, **kwargs):
 
+        # Check for explicitly specified authinfo files
+        if authinfo is not None:
+            if not any_file_exists(authinfo):
+                if isinstance(authinfo, items_types):
+                    raise OSError('None of the specified authinfo files '
+                                  'exist: %s' % ', '.join(authinfo))
+                else:
+                    raise OSError('The specified authinfo file does not '
+                                  'exist: %s' % authinfo) 
+
         # If a prototype exists, use it for the connection config
         prototype = kwargs.get('prototype')
         if prototype is not None:
@@ -378,10 +390,33 @@ class CAS(object):
                 num = num + 1
         self._id_generator = _id_generator()
 
+        self.server_type, self.server_version, self.server_features = self._get_server_features()
+
     def _gen_id(self):
         ''' Generate an ID unique to the session '''
         import numpy
         return numpy.base_repr(next(self._id_generator), 36)
+
+    def _get_server_features(self):
+        '''
+        Determine which features are available in the server
+
+        Returns
+        -------
+        set-of-strings
+
+        '''
+        out = set()
+
+        info = self.retrieve('builtins.serverstatus', _messagelevel='error',
+                             _apptag='UI')
+        version = tuple([int(x) for x in info['About']['Version'].split('.')][:2])
+        stype = info['About']['System']['OS Name'].lower()
+
+#       if version >= (3, 4):
+#           out.add('csv-ints')
+
+        return stype, version, out
 
     def _detect_protocol(self, hostname, port, protocol=None):
         '''
@@ -1137,11 +1172,114 @@ class CAS(object):
 
         return signature
 
+    def _extract_dtypes(self, df):
+        '''
+        Extract importoptions= style data types from the DataFrame
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            The DataFrame to get types from
+        format : string, optional
+            The output format: dict or list
+
+        Returns
+        -------
+        OrderedDict
+
+        '''
+        out = collections.OrderedDict()
+
+        for key, value in df.dtypes.iteritems():
+            value = value.name
+
+            if value == 'object':
+                value = 'varchar'
+
+            elif value.startswith('float'):
+                value = 'double'
+
+            elif value.endswith('int64'):
+                if 'csv-ints' in self.server_features:
+                    value = 'int64'
+                else:
+                    value = 'double'
+
+            elif value.startswith('int'):
+                if 'csv-ints' in self.server_features:
+                    value = 'int32'
+                else:
+                    value = 'double'
+
+            elif value.startswith('bool'):
+                if 'csv-ints' in self.server_features:
+                    value = 'int32'
+                else:
+                    value = 'double'
+
+            elif value.startswith('datetime'):
+                value = 'varchar'
+
+            else:
+                continue
+
+            out['%s' % key] = dict(type=value)
+
+        return out
+
+    def _apply_importoptions_vars(self, importoptions, df_dtypes):
+        '''
+        Merge in vars= parameters to importoptions=
+
+        Notes
+        -----
+        This method modifies the importoptions in-place.
+
+        Parameters
+        ----------
+        importoptions : dict
+            The importoptions= parameter
+        df_dtypes : dict or list
+            The DataFrame data types dictionary
+
+        '''
+        if 'vars' not in importoptions:
+            importoptions['vars'] = df_dtypes
+            return
+
+        vars = importoptions['vars']
+
+        # Merge options into dict vars
+        if isinstance(vars, dict_types):
+            for key, value in six.iteritems(df_dtypes):
+                if key in vars:
+                    for k, v in six.iteritems(value):
+                        vars[key].setdefault(k, v)
+                else:
+                    vars[key] = value
+
+        # Merge options into list vars
+        else:
+            df_dtypes_list = []
+            for key, value in six.iteritems(df_dtypes):
+                value = dict(value)
+                value['name'] = key
+                df_dtypes_list.append(value)
+
+            for i, item in enumerate(df_dtypes_list):
+                if i < len(vars):
+                    if not vars[i]:
+                        vars[i] = item
+                    else:
+                        for key, value in six.iteritems(item):
+                            vars[i].setdefault(key, value)
+                else:
+                    vars.append(item)
+
     def upload(self, data, importoptions=None, casout=None, **kwargs):
         '''
         Upload data from a local file into a CAS table
 
-        This method is a thin wrapper around the `table.upload` CAS action.
         The primary difference between this data loader and the other data
         loaders on this class is that, in this case, the parsing of the data
         is done on the server.  This method simply uploads the file as
@@ -1171,11 +1309,11 @@ class CAS(object):
             or a URL.  DataFrames will be converted to CSV before
             uploading.
         importoptions : dict, optional
-            Import options for the table.upload action.
+            Import options for the ``table.loadtable`` action.
         casout : dict, optional
-            Output table definition for the `table.upload` action.
+            Output table definition for the ``table.loadtable`` action.
         **kwargs : keyword arguments, optional
-            Additional parameters to the `table.upload` action.
+            Additional parameters to the ``table.loadtable`` action.
 
         Examples
         --------
@@ -1197,6 +1335,7 @@ class CAS(object):
         '''
         delete = False
         name = None
+        df_dtypes = None
 
         for key, value in list(kwargs.items()):
             if importoptions is None and key.lower() == 'importoptions':
@@ -1214,6 +1353,7 @@ class CAS(object):
                 filename = tmp.name
                 name = os.path.splitext(os.path.basename(filename))[0]
                 data.to_csv(filename, encoding='utf-8', index=False)
+                df_dtypes = self._extract_dtypes(data)
 
         elif data.startswith('http://') or \
                 data.startswith('https://') or \
@@ -1236,7 +1376,7 @@ class CAS(object):
             filename = data
             name = os.path.splitext(os.path.basename(filename))[0]
 
-        # TODO: Populate docstring with table.upload action help
+        # TODO: Populate docstring with table.loadtable action help
         filetype = {
             'sav': 'spss',
             'xlsx': 'excel',
@@ -1246,6 +1386,7 @@ class CAS(object):
 
         if importoptions is None:
             importoptions = {}
+
         if isinstance(importoptions, (dict, ParamManager)) and \
                 'filetype' not in [x.lower() for x in importoptions.keys()]:
             ext = os.path.splitext(filename)[-1][1:].lower()
@@ -1253,7 +1394,11 @@ class CAS(object):
                 importoptions['filetype'] = filetype[ext]
             elif len(ext) == 3 and ext.endswith('sv'):
                 importoptions['filetype'] = 'csv'
+
         kwargs['importoptions'] = importoptions
+
+        if df_dtypes:
+            self._apply_importoptions_vars(importoptions, df_dtypes)
 
         if casout is None:
             casout = {}
@@ -1292,11 +1437,11 @@ class CAS(object):
             or a URL.  DataFrames will be converted to CSV before
             uploading.
         importoptions : dict, optional
-            Import options for the table.upload action.
+            Import options for the ``table.loadtable`` action.
         casout : dict, optional
-            Output table definition for the `table.upload` action.
+            Output table definition for the ``table.loadtable`` action.
         **kwargs : keyword arguments, optional
-            Additional parameters to the `table.upload` action.
+            Additional parameters to the ``table.loadtable`` action.
 
         Returns
         -------
@@ -1328,11 +1473,11 @@ class CAS(object):
         data : :class:`pandas.DataFrame`
             DataFrames will be converted to CSV before uploading.
         importoptions : dict, optional
-            Import options for the table.upload action.
+            Import options for the ``table.loadtable`` action.
         casout : dict, optional
-            Output table definition for the `table.upload` action.
+            Output table definition for the ``table.loadtable`` action.
         **kwargs : keyword arguments, optional
-            Additional parameters to the `table.upload` action.
+            Additional parameters to the ``table.loadtable`` action.
 
         Returns
         -------
@@ -2941,6 +3086,95 @@ class CAS(object):
 
         '''
         return self._read_any('read_stata', filepath_or_buffer, casout=casout, **kwargs)
+
+    def path_to_caslib(self, path, name=None, **kwargs):
+        '''
+        Return a caslib name for a given path
+
+        If a caslib does not exist for the current path or for a parent
+        path, a new caslib will be created.
+
+        Parameters
+        ----------
+        path : string
+            The absolute path to the desired caslib directory
+        name : string, optional
+            The name to give to the caslib, if a new one is created
+        kwargs : keyword-parameter, optional
+            Additional parameters to use when creating a new caslib
+
+        Returns
+        -------
+        ( caslib-name, relative-path )
+            The return value is a two-element tuple.  The first element
+            is the name of the caslib.  The second element is the relative
+            path to the requested directory from the caslib.  The second
+            element will be blank if the given path matches a caslib,
+            or a new caslib is created.
+
+        '''
+        if not name:
+            name = 'Caslib_%x' % random.randint(0,1e9)
+
+        activeonadd_key = None
+        subdirectories_key = None
+        datasource_key = None
+
+        for key, value in kwargs.items():
+            if key.lower() == 'activeonadd':
+                activeonadd_key = key
+            elif key.lower() == 'subdirectories':
+                subdirectories_key = key
+            elif key.lower() == 'datasource':
+                datasource_key = key
+
+        if not activeonadd_key:
+            activeonadd_key = 'activeonadd'
+            kwargs[activeonadd_key] = False
+        if not subdirectories_key:
+            subdirectories_key = 'subdirectories'
+            kwargs[subdirectories_key] = True
+        if not datasource_key:
+            datasource_key = 'datasource'
+            kwargs[datasource_key] = dict(srctype='path')
+
+        is_windows = self.server_type.startswith('win')
+
+        if is_windows:
+            sep = '\\'
+            normpath = path.lower()
+        else:
+            sep = '/'
+            normpath = path
+
+        if normpath.endswith(sep):
+            normpath = normpath[:-1]
+
+        info = self.retrieve('table.caslibinfo',
+                             _messagelevel='error')['CASLibInfo']
+
+        for libname, item, subdirs in zip(info['Name'], info['Path'],
+                                          info['Subdirs']):
+            if item.endswith(sep):
+                item = item[:-1]
+            if is_windows:
+                item = item.lower()
+            if item == normpath:
+                if bool(subdirs) != bool(kwargs[subdirectories_key]):
+                    raise SWATError('caslib exists, but subdirectories flag differs')
+                return libname, ''
+            elif normpath.startswith(item):
+                if bool(subdirs) != bool(kwargs[subdirectories_key]):
+                    raise SWATError('caslib exists, but subdirectories flag differs')
+                return libname, path[len(item)+1:]
+
+        out = self.retrieve('table.addcaslib', _messagelevel='error',
+                            name=name, path=path, **kwargs)
+
+        if out.severity > 1:
+            raise SWATError(out.status)
+
+        return name, ''
 
 
 def getone(connection, datamsghandler=None):
