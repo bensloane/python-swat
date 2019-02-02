@@ -561,6 +561,12 @@ class SASDataFrame(pd.DataFrame):
            HTML representation of SASDataFrame
 
         '''
+        # Note: 
+        # 
+        # Similar to results._repr_html(). Cannot do anything on pandas end
+        # when calling pd.DataFrame._repr_html_(self) which is broken in 0.24.0.
+        # Work around until next release is to reset the IPython config if there
+        # are additional calls to get_IPython() from third parties. 
         try:
             html = pd.DataFrame._repr_html_(self)
         except AttributeError:
