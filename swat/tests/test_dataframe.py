@@ -356,6 +356,21 @@ class TestDataFrame(tm.TestCase):
 
         self.assertFalse(re.search(r'\d+ rows x \d+ columns', html))
 
+    def test_html_IPython_config(self):
+        # Output first dataframe
+        out = self.table.fetch()['Fetch']
+
+        # Check to see initial IPython config
+        cfg = get_ipython().config['IPKernelApp']['parent_appname']
+        self.assertFalse(isinstance(cfg, str))
+
+        # Output second dataframe
+        out = self.table.fetch()['Fetch']
+
+        # Check to see IPython config changed
+        cfg = get_ipython().config['IPKernelApp']['parent_appname']
+        self.assertTrue(isinstance(cfg, str))
+
 # NOTE: Javascript will not be supported at this time
 #   def test_javascript(self):
 #       swat.options.display.notebook.repr_javascript = True
