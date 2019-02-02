@@ -24,6 +24,7 @@ Utilities for collecting results from a CAS action
 from __future__ import print_function, division, absolute_import, unicode_literals
 
 import collections
+from distutils.version import LooseVersion, StrictVersion
 import pprint
 import re
 import six
@@ -88,8 +89,34 @@ class RendererMixin(object):
            HTML representation of CASResults object
 
         '''
-        if pdcom.in_qtconsole():
-            return None
+
+        # Note: 
+        # 
+        # Calling this method with pandas 0.24.0 installed results in AttributeError 
+        # and poor output formating of CASResult objects. Adding condition to check
+        # pandas version so CASResult will print correctly for older and newer installations.
+        # 
+        # in_qtconsole() removed from pandas.core.common in 0.24.0 release. Now in pandas.io.formats. 
+        # Using the same check in pd.frame._repr_html() in 0.24.0 to check IPython version before 
+        # disabling HTML output in QtConsole.
+        #
+        # See links for more information: 
+        #   https://github.com/pandas-dev/pandas/issues/25036
+        #   https://github.com/pandas-dev/pandas/pull/25039
+        #   https://github.com/pandas-dev/pandas/pull/25039#issuecomment-45911627
+        if StrictVersion(pd.__version__) < StrictVersion('0.24.0'):
+            if pdcom.in_qtconsole():
+                return None
+        else:
+            try:
+                import IPython
+            except ImportError:
+                pass
+            else:
+                if LooseVersion(IPython.__version__) < LooseVersion('3.0'):
+                    if pd.io.formats.console.in_qtconsole():
+                        # 'HTML output is disabled in QtConsole'
+                        return None
 
         if not pd.get_option('display.notebook.repr_html'):
             return None
