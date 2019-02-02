@@ -561,7 +561,12 @@ class SASDataFrame(pd.DataFrame):
            HTML representation of SASDataFrame
 
         '''
-        html = pd.DataFrame._repr_html_(self)
+        try:
+            html = pd.DataFrame._repr_html_(self)
+        except AttributeError:
+            get_ipython().config.get('IPKernelApp', {})['parent_appname'] = ""
+            html = pd.DataFrame._repr_html_(self)
+
         if html is None:
             return
 
