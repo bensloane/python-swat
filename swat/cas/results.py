@@ -98,15 +98,20 @@ class RendererMixin(object):
         # 
         # in_qtconsole() removed from pandas.core.common in 0.24.0 release. Now in pandas.io.formats. 
         # Using the same check in pd.frame._repr_html() in 0.24.0 to check IPython version before 
-        # disabling HTML output in QtConsole.
+        # disabling HTML output in QtConsole. Limit calls to in_qtconsole() if possible.
         #
         # See links for more information: 
         #   https://github.com/pandas-dev/pandas/issues/25036
         #   https://github.com/pandas-dev/pandas/pull/25039
         #   https://github.com/pandas-dev/pandas/pull/25039#issuecomment-45911627
+        
+        # For pd < 0.24.0 call in_qtconsole from common to prevent AttributeError
         if StrictVersion(pd.__version__) < StrictVersion('0.24.0'):
             if pdcom.in_qtconsole():
                 return None
+            
+        # For pd > 0.24.0 and IPython < 3.0 call in_qtconsole() from formats.
+        # in_qtconsole() deprecated for IPython > 3.0 but check for older version.
         else:
             try:
                 import IPython
